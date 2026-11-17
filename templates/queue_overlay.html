@@ -3,7 +3,6 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="refresh" content="20">
   <title>Upcoming Queue Overlay</title>
   <style>
     * { box-sizing: border-box; }
@@ -141,5 +140,6 @@
       <div class="empty">No matches currently in queue.</div>
     {% endif %}
   </main>
+  {% with live_seconds=20, live_target='html', live_badge=false, live_pause_hidden=false %}{% include '_live_refresh.html' %}{% endwith %}
 </body>
 </html>

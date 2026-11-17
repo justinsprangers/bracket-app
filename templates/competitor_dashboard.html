@@ -177,9 +177,5 @@
   </div>
 </div>
 
-<script>
-  setTimeout(function() {
-    window.location.reload();
-  }, 10000);
-</script>
 {% endblock %}
+{% block live_refresh %}{% with live_seconds=10 %}{% include '_live_refresh.html' %}{% endwith %}{% endblock %}

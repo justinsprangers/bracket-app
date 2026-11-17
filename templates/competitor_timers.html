@@ -1,6 +1,7 @@
 {% extends 'base.html' %}
 {% block title %}Competitor Repair Timers{% endblock %}
 
+
 {% block content %}
 <h2>Competitor Repair Timers</h2>
 <p class="text-muted">Tracks the mandatory 20-minute repair window between matches. <strong>Timers begin immediately when your match result is submitted and saved.</strong></p>
@@ -25,7 +26,7 @@
             <span class="badge bg-success fs-6 px-3 py-2">Ready to Fight ✓</span>
           {% else %}
             <span class="badge bg-warning text-dark fs-6 px-3 py-2 mb-2">Repairing</span>
-            <div class="fs-5 fw-bold text-danger countdown-timer" data-seconds="{{ item.remaining_seconds }}">
+            <div class="fs-5 fw-bold text-danger countdown-timer" data-ends-at="{{ server_time_ms + item.remaining_seconds * 1000 }}" data-suffix=" remaining">
               {{ item.remaining_seconds // 60 }}m {{ '%02d'|format(item.remaining_seconds % 60) }}s remaining
             </div>
           {% endif %}
@@ -37,25 +38,5 @@
   {% endfor %}
 </div>
 
-<script>
-  document.addEventListener("DOMContentLoaded", function() {
-    const timers = document.querySelectorAll('.countdown-timer');
-    timers.forEach(el => {
-      let totalSeconds = parseInt(el.dataset.seconds);
-      const interval = setInterval(() => {
-        if (totalSeconds <= 0) {
-          clearInterval(interval);
-          location.reload();
-          return;
-        }
-        totalSeconds--;
-        const mins = Math.floor(totalSeconds / 60);
-        const secs = totalSeconds % 60;
-        el.textContent = `${mins}m ${secs < 10 ? '0' : ''}${secs}s remaining`;
-      }, 1000);
-    });
-  });
-
-  setTimeout(() => { location.reload(); }, 30000);
-</script>
 {% endblock %}
+{% block live_refresh %}{% with live_seconds=20 %}{% include '_live_refresh.html' %}{% endwith %}{% endblock %}

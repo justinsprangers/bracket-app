@@ -1,0 +1,92 @@
+{# Background auto-refresh that survives bad Wi-Fi.
+   Instead of reloading the whole page (which leaves a dead browser error page if the network
+   blips), fetch the page quietly and swap in the new content only if it arrived. On failure the
+   old data stays up, a small "Reconnecting" badge shows, and it retries.
+   Options (set with {% with %} around the include):
+     live_seconds       how often to refresh (required)
+     live_target        '#live-root' (default, the page body in base.html) or 'html' (whole page, overlays)
+     live_badge         false to hide the reconnecting badge (stream overlays)
+     live_pause_hidden  false to keep refreshing while the tab is hidden (stream overlays)
+   Countdowns: any element with class "countdown-timer" and data-ends-at (ms since epoch) ticks
+   down every second; data-suffix is added after the time. #}
+<script>
+(function () {
+  var SECONDS = {{ live_seconds|int }};
+  var TARGET = {{ (live_target or '#live-root')|tojson }};
+  var SHOW_BADGE = {{ 'false' if live_badge == false else 'true' }};
+  var PAUSE_HIDDEN = {{ 'false' if live_pause_hidden == false else 'true' }};
+  var lastOk = new Date(), failures = 0, timer = null, busy = false;
+
+  function root(doc) { return TARGET === 'html' ? doc.documentElement : doc.querySelector(TARGET); }
+
+  function badge(text) {
+    if (!SHOW_BADGE) return;
+    var el = document.getElementById('live-badge');
+    if (!text) { if (el) el.remove(); return; }
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'live-badge';
+      el.setAttribute('role', 'status');
+      el.style.cssText = 'position:fixed;bottom:12px;right:12px;z-index:2000;padding:6px 12px;border-radius:6px;' +
+        'background:#ffc107;color:#212529;font:600 14px system-ui,sans-serif;box-shadow:0 2px 8px rgba(0,0,0,.3)';
+      document.body.appendChild(el);
+    }
+    el.textContent = text;
+  }
+
+  function schedule(ms) { clearTimeout(timer); timer = setTimeout(refresh, ms); }
+
+  function userIsTyping() {
+    var a = document.activeElement;
+    return a && /^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName);
+  }
+
+  function refresh() {
+    if (busy) return;
+    if (PAUSE_HIDDEN && document.hidden) return;          // resumes when the tab is shown again
+    if (userIsTyping()) { schedule(5000); return; }       // don't swap the page out from under a form
+    busy = true;
+    var ctrl = window.AbortController ? new AbortController() : null;
+    var giveUp = setTimeout(function () { if (ctrl) ctrl.abort(); }, 10000);
+    fetch(location.href, { cache: 'no-store', credentials: 'same-origin', signal: ctrl ? ctrl.signal : undefined })
+      .then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        if (r.redirected) { location.href = r.url; return null; }   // e.g. logged out
+        return r.text();
+      })
+      .then(function (html) {
+        if (html === null) return;
+        var doc = new DOMParser().parseFromString(html, 'text/html');
+        var fresh = root(doc), current = root(document);
+        if (!fresh || !current) throw new Error('unexpected page');
+        current.innerHTML = fresh.innerHTML;
+        if (TARGET !== 'html') document.title = doc.title;
+        failures = 0;
+        lastOk = new Date();
+        badge(null);
+        tick();
+        schedule(SECONDS * 1000 + Math.random() * 2000);   // jitter so devices don't all hit at once
+      })
+      .catch(function () {
+        failures += 1;
+        badge('Reconnecting… showing data from ' + lastOk.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }));
+        schedule(Math.min(5000 * failures, 30000));
+      })
+      .then(function () { clearTimeout(giveUp); busy = false; });
+  }
+
+  function tick() {
+    var now = Date.now();
+    document.querySelectorAll('.countdown-timer[data-ends-at]').forEach(function (el) {
+      var left = Math.max(0, Math.round((parseInt(el.dataset.endsAt, 10) - now) / 1000));
+      el.textContent = Math.floor(left / 60) + 'm ' + String(left % 60).padStart(2, '0') + 's' + (el.dataset.suffix || '');
+      if (left === 0 && !el.dataset.done) { el.dataset.done = '1'; schedule(1500); }   // fetch the "ready" state
+    });
+  }
+
+  document.addEventListener('visibilitychange', function () { if (!document.hidden) schedule(0); });
+  setInterval(tick, 1000);
+  tick();
+  schedule(SECONDS * 1000);
+})();
+</script>

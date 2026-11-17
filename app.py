@@ -2,6 +2,7 @@ import math
 import os
 import random
 import hmac
+import time
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify
@@ -61,6 +62,10 @@ app.config['SECRET_KEY'] = SECRET_KEY
 # (Render sets the RENDER env var) while still allowing plain-http local testing.
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['SESSION_COOKIE_SECURE'] = bool(os.environ.get('RENDER'))
+# Neon suspends an idle database after a few minutes, which silently kills pooled connections.
+# pre_ping tests each connection before use (and reconnects if it's dead) instead of failing
+# the request; recycle replaces connections before they get old.
+app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {'pool_pre_ping': True, 'pool_recycle': 280}
 db.init_app(app)
 
 STAGE1_ROUNDS = ['s1_r1', 's1_r2']
@@ -132,6 +137,13 @@ def login_required(f):
 @app.context_processor
 def inject_auth_status():
     return dict(is_authenticated=session.get("authenticated", False))
+
+
+@app.context_processor
+def inject_server_time():
+    # Countdowns render an absolute end time (render time + seconds left), so a cached copy of
+    # the page still counts down to the right moment.
+    return dict(server_time_ms=int(time.time() * 1000))
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -659,6 +671,15 @@ def generate_stage2_round1(bot_class):
 
 # ---------- dashboard & competitor routes ----------
 
+def public_cache(seconds):
+    """Cache a public page for a few seconds so a room full of phones (and stream overlays)
+    refreshing at once costs one page build instead of one per device. Admins, and anyone with
+    a pending flash message, always get a fresh page, so the admin navbar or someone else's
+    message is never cached. Any change made through the app clears the cache right away."""
+    return cache.cached(timeout=seconds, query_string=True,
+                        unless=lambda: bool(session.get('authenticated') or session.get('_flashes')))
+
+
 @app.route('/')
 def index():
     if not session.get("authenticated"):
@@ -694,6 +715,7 @@ def index():
 
 
 @app.route('/competitor')
+@public_cache(5)
 def competitor_dashboard():
     current_class = current_selected_class('3lb')
     enabled = enabled_classes()
@@ -726,11 +748,7 @@ def competitor_dashboard():
 
 
 @app.route('/standings')
-# Cache the public standings page for 15 seconds. Admins (and anyone with a pending flash
-# message) skip the cache, so the admin navbar or someone else's message is never cached
-# and served to the public.
-@cache.cached(timeout=15, query_string=True,
-              unless=lambda: bool(session.get('authenticated') or session.get('_flashes')))
+@public_cache(15)
 def standings():
     current_class = request.args.get('class', '3lb')
     enabled = enabled_classes()
@@ -746,6 +764,7 @@ def standings():
 
 
 @app.route('/standings/overlay')
+@public_cache(10)
 def standings_overlay():
     current_class = request.args.get('class', '3lb')
     enabled = enabled_classes()
@@ -757,6 +776,7 @@ def standings_overlay():
 
 
 @app.route('/competitor_results')
+@public_cache(10)
 def competitor_results():
     current_class = request.args.get('class', '3lb')
     enabled = enabled_classes()
@@ -778,6 +798,7 @@ def competitor_results():
 
 
 @app.route('/timers')
+@public_cache(10)
 def competitor_timers():
     current_class = request.args.get('class', '3lb')
     enabled = enabled_classes()
@@ -1244,6 +1265,7 @@ def stage2_bracket():
 
 
 @app.route('/stage2/overlay')
+@public_cache(10)
 def stage2_overlay():
     bot_class = current_selected_class('3lb')
     bracket = stage2_bracket_data(bot_class)
@@ -1526,6 +1548,7 @@ def queue():
 
 
 @app.route('/queue/overlay')
+@public_cache(5)
 def queue_overlay():
     current_class = current_selected_class('3lb')
     return render_template('queue_overlay.html',

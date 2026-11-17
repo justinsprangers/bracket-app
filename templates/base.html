@@ -100,7 +100,7 @@
       </div>
     </div>
   </nav>
-  <div class="container pb-5">
+  <div class="container pb-5" id="live-root">
     {% with messages = get_flashed_messages(with_categories=true) %}
       {% for category, msg in messages %}
         <div class="alert alert-{{ 'danger' if category=='error' else 'info' }}">{{ msg }}</div>
@@ -146,5 +146,6 @@
       }
     });
   </script>
+  {% block live_refresh %}{% endblock %}
 </body>
 </html>
