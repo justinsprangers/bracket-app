@@ -84,6 +84,7 @@
           <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('standings') }}">Group Standings</a>
           <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('competitor_results') }}">Match Results</a>
           <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('admin_timers') }}">⏱️ Repair Manager</a>
+          <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('admin_overrides') }}" title="Manual fixes: withdrawals, wrong results, bracket repairs">🛠️ Overrides</a>
           <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('settings') }}" title="Global Tournament Settings">⚙️ Settings</a>
           <form action="{{ url_for('reset_tournament') }}" method="post" class="m-0"
                 data-confirm="Reset the whole tournament? This deletes every match and result in every class (bots are kept). This can't be undone.">

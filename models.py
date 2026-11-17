@@ -58,6 +58,16 @@ class Match(db.Model):
     winner = db.relationship('Team', foreign_keys=[winner_id])
 
 
+class OverrideLog(db.Model):
+    """One row per manual override made on the Overrides page (who-did-what record)."""
+    id = db.Column(db.Integer, primary_key=True)
+    created_at = db.Column(db.DateTime, nullable=False)
+    bot_class = db.Column(db.String(20), nullable=False, default='3lb')
+    action = db.Column(db.String(40), nullable=False)
+    details = db.Column(db.String(500), nullable=False, default='')
+    reason = db.Column(db.String(255), nullable=False, default='')
+
+
 class TournamentSetting(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     key = db.Column(db.String(50), unique=True, nullable=False)

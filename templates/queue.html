@@ -95,6 +95,12 @@
             <input type="hidden" name="match_id" value="{{ m.id }}">
             <button class="btn btn-success btn-sm">Start Match</button>
           </form>
+        {% elif loop.index > 1 %}
+          <form method="post" class="m-0">
+            <input type="hidden" name="action" value="move_top">
+            <input type="hidden" name="match_id" value="{{ m.id }}">
+            <button class="btn btn-outline-secondary btn-sm" title="Put this match first in the queue">Move to Top</button>
+          </form>
         {% endif %}
       </li>
     {% else %}

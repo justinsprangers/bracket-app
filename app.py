@@ -11,7 +11,7 @@ from flask_caching import Cache
 from sqlalchemy import inspect, or_, text
 from dotenv import load_dotenv
 
-from models import db, Team, Match, TournamentSetting
+from models import db, Team, Match, TournamentSetting, OverrideLog
 from bracket_logic import random_pairs, build_bracket_slots, round_pairs_from_slots, next_pow2
 
 # ---------- Environment & Configuration Setup ----------
@@ -370,6 +370,10 @@ def create_stage1_round2_matches(bot_class):
     round1_byes = {m.team1_id for m in matches_for('s1_r1', 1, bot_class=bot_class) if m.is_bye and m.team1_id}
     
     winners, losers = stage1_round1_groups(bot_class)
+    # Withdrawn bots don't get a Round 2 match.
+    active_ids = {t.id for t in active_teams(bot_class)}
+    winners = [tid for tid in winners if tid in active_ids]
+    losers = [tid for tid in losers if tid in active_ids]
     # slot_index keeps counting across both groups so every Round 2 match gets its own number
     # (it used to restart at 0 for the losers group, interleaving the two groups).
     slot = 0
@@ -1428,6 +1432,276 @@ def stage2(round_num):
                            current_class=bot_class, BOT_CLASSES=enabled, CLASS_LABELS=CLASS_LABELS)
 
 
+# ---------- manual overrides ----------
+# The Overrides page lets an admin fix anything by hand (withdrawals, wrong results, a broken
+# bracket). These actions skip the normal step-by-step checks, so every one is logged.
+
+RESULT_TYPES = ['KO', 'JD', 'TO', 'FF']   # FF = forfeit (e.g. a withdrawn bot)
+QUEUE_STATUSES = ['queued', 'in_progress', 'awaiting_results', 'completed']
+EDITABLE_STAGES = ['s1_r1', 's1_r2', 'decider']   # stages where matches can be added/deleted
+# Deleting a stage also deletes every stage drawn from it.
+ROLLBACK_STAGES = {
+    's1_r1': ['s1_r1', 's1_r2', 'decider', 's2', 's2_placement'],
+    's1_r2': ['s1_r2', 'decider', 's2', 's2_placement'],
+    'decider': ['decider', 's2', 's2_placement'],
+}
+
+
+def team_name(team_id):
+    team = db.session.get(Team, team_id) if team_id else None
+    return team.name if team else '(none)'
+
+
+def match_label(m):
+    if m.stage == 's2':
+        return f'Stage 2 R{m.round_num} match {m.slot_index + 1}'
+    return f'{STAGE_LABELS.get(m.stage, m.stage)} match {m.slot_index + 1}'
+
+
+def log_override(bot_class, action, details):
+    reason = request.form.get('reason', '').strip()[:255]
+    db.session.add(OverrideLog(created_at=utcnow(), bot_class=bot_class, action=action,
+                               details=details[:500], reason=reason))
+
+
+def withdraw_bot(team):
+    """Withdraw a bot: every match it hasn't finished becomes a forfeit win for its opponent."""
+    forfeits = []
+    open_matches = Match.query.filter(Match.winner_id == None, Match.is_bye == False,
+                                      or_(Match.team1_id == team.id, Match.team2_id == team.id)).all()
+    for m in open_matches:
+        opponent_id = m.team2_id if m.team1_id == team.id else m.team1_id
+        if opponent_id is None:
+            continue
+        opponent = db.session.get(Team, opponent_id)
+        rest_before = opponent.last_match_end_time if opponent else None
+        update_match_winner(m, opponent_id)
+        if opponent:
+            opponent.last_match_end_time = rest_before   # a forfeit win isn't a fight: no repair timer
+        m.result_type = 'FF'
+        forfeits.append(f'{match_label(m)} to {team_name(opponent_id)}')
+    team.dropped = True
+    return forfeits
+
+
+def propagate_stage2_winner(m, old_winner, new_winner):
+    """After a Stage 2 winner changes, fix the next round (and bronze match) to match.
+    Returns a list of notes describing what changed."""
+    notes = []
+    nxt = Match.query.filter_by(stage='s2', round_num=m.round_num + 1, slot_index=m.slot_index // 2,
+                                bot_class=m.bot_class).first()
+    if nxt:
+        attr = 'team1_id' if m.slot_index % 2 == 0 else 'team2_id'
+        if getattr(nxt, attr) == old_winner:
+            if nxt.winner_id == old_winner:
+                update_match_winner(nxt, None, unlock_on_reset=True)
+                notes.append(f'cleared the result of {match_label(nxt)}')
+            setattr(nxt, attr, new_winner)
+            notes.append(f'{match_label(nxt)} now has {team_name(new_winner)}')
+    round_size = Match.query.filter_by(stage='s2', round_num=m.round_num, bot_class=m.bot_class).count()
+    placement = stage2_placement_match(m.bot_class)
+    if round_size == 2 and placement and m.team1_id and m.team2_id:
+        old_loser = m.team2_id if old_winner == m.team1_id else m.team1_id
+        new_loser = m.team2_id if new_winner == m.team1_id else m.team1_id
+        for attr in ('team1_id', 'team2_id'):
+            if getattr(placement, attr) == old_loser:
+                if placement.winner_id == old_loser:
+                    update_match_winner(placement, None, unlock_on_reset=True)
+                    notes.append('cleared the bronze match result')
+                setattr(placement, attr, new_loser)
+                notes.append(f'bronze match now has {team_name(new_loser)}')
+    return notes
+
+
+def override_match(m, form, bot_class):
+    """Apply the match editor form to one match. Returns (error, summary)."""
+    class_ids = {t.id for t in Team.query.filter_by(bot_class=bot_class)}
+    t1 = parse_id(form.get('team1'))
+    t2 = None if m.is_bye else parse_id(form.get('team2'))
+    if t1 is None or (t1 not in class_ids) or (t2 is not None and t2 not in class_ids):
+        return 'Pick bots from this class.', None
+    if not m.is_bye and (t2 is None or t1 == t2):
+        return 'A match needs two different bots.', None
+    winner_pos = form.get('winner', 'none')
+    new_winner = t1 if m.is_bye else {'1': t1, '2': t2}.get(winner_pos)
+    result_type = form.get('result_type') or None
+    if result_type not in RESULT_TYPES:
+        result_type = None
+
+    old = (m.team1_id, m.team2_id, m.winner_id, m.result_type, m.locked, m.queue_status)
+    old_winner = m.winner_id
+    m.team1_id, m.team2_id = t1, t2
+    if new_winner != m.winner_id:
+        update_match_winner(m, new_winner, unlock_on_reset=m.stage in ('s2', 's2_placement'))
+    m.result_type = result_type if m.winner_id else None
+    m.locked = bool(form.get('locked'))
+    status = form.get('queue_status')
+    if m.winner_id is None and status in QUEUE_STATUSES and status != 'completed':
+        if status == 'queued' and m.queue_status != 'queued':
+            move_match_to_queue_bottom(m)
+        m.queue_status = status
+    if (m.team1_id, m.team2_id, m.winner_id, m.result_type, m.locked, m.queue_status) == old:
+        return None, None
+
+    summary = (f'{match_label(m)}: {team_name(old[0])} vs {team_name(old[1])}, winner {team_name(old[2])} '
+               f'-> {team_name(m.team1_id)} vs {team_name(m.team2_id)}, winner {team_name(m.winner_id)}')
+    notes = []
+    if m.stage == 's2' and old_winner and m.winner_id and old_winner != m.winner_id and form.get('propagate'):
+        notes = propagate_stage2_winner(m, old_winner, m.winner_id)
+    elif m.stage == 's2' and old_winner and old_winner != m.winner_id and \
+            round_generated('s2', m.round_num + 1, bot_class):
+        notes = [f'Round {m.round_num + 1} still has the old winner; check it']
+    elif m.stage in NEXT_STAGES and old_winner != m.winner_id and later_round_generated(m.stage, bot_class):
+        notes = ['later rounds were drawn from the old result; check their pairings']
+    if notes:
+        summary += ' (' + '; '.join(notes) + ')'
+    return None, summary
+
+
+def rollback_options(bot_class):
+    """(value, label) pairs for every round that currently exists, for the roll-back form."""
+    options = []
+    for stage in EDITABLE_STAGES:
+        if round_generated(stage, 1, bot_class):
+            options.append((stage, STAGE_LABELS[stage]))
+    r = 1
+    while round_generated('s2', r, bot_class):
+        options.append((f's2:{r}', f'Stage 2 Round {r}' + (' (whole bracket)' if r == 1 else '')))
+        r += 1
+    return options
+
+
+@app.route('/admin/overrides', methods=['GET', 'POST'])
+@login_required
+def admin_overrides():
+    bot_class = current_selected_class('3lb')
+    enabled = enabled_classes()
+    here = url_for('admin_overrides', **{'class': bot_class})
+
+    if request.method == 'POST':
+        action = request.form.get('action')
+        team = get_by_id(Team, request.form.get('team_id'))
+        match = get_by_id(Match, request.form.get('match_id'))
+        if match and match.bot_class != bot_class:
+            match = None
+        if team and team.bot_class != bot_class:
+            team = None
+        message, error = None, None
+
+        if action == 'withdraw' and team and not team.dropped:
+            forfeits = withdraw_bot(team)
+            details = f'Withdrew {team.name}' + (f'; forfeits: {", ".join(forfeits)}' if forfeits else '')
+            log_override(bot_class, 'withdraw', details)
+            message = details
+        elif action == 'reinstate' and team and team.dropped:
+            team.dropped = False
+            log_override(bot_class, 'reinstate', f'Reinstated {team.name} (earlier forfeits stay; edit those matches if needed)')
+            message = f'Reinstated {team.name}. Forfeited matches were not changed back.'
+        elif action == 'set_repair' and team:
+            minutes = parse_id(request.form.get('minutes'))
+            if minutes is None or not 0 <= minutes <= 120:
+                error = 'Repair time must be 0-120 minutes.'
+            else:
+                team.last_match_end_time = (utcnow() - REST_PERIOD + timedelta(minutes=minutes)) if minutes else None
+                log_override(bot_class, 'repair_time', f'Set {team.name} repair time left to {minutes} min')
+                message = f'{team.name}: {minutes} min of repair time left.'
+        elif action == 'change_class' and team:
+            new_class = request.form.get('new_class')
+            if new_class not in BOT_CLASSES or new_class == team.bot_class:
+                error = 'Pick a different class.'
+            elif Match.query.filter(or_(Match.team1_id == team.id, Match.team2_id == team.id)).count():
+                error = (f"{team.name} already has matches in {CLASS_LABELS[team.bot_class]}. Withdraw it here "
+                         'and add it again in the other class instead.')
+            else:
+                log_override(bot_class, 'change_class', f'Moved {team.name} to {CLASS_LABELS[new_class]}')
+                team.bot_class = new_class
+                message = f'Moved {team.name} to {CLASS_LABELS[new_class]}.'
+        elif action == 'edit_match' and match:
+            error, summary = override_match(match, request.form, bot_class)
+            if summary:
+                log_override(bot_class, 'edit_match', summary)
+                message = summary
+            elif not error:
+                message = 'No changes.'
+        elif action == 'add_match':
+            stage = request.form.get('stage')
+            t1, t2 = parse_id(request.form.get('team1')), parse_id(request.form.get('team2'))
+            class_ids = {t.id for t in Team.query.filter_by(bot_class=bot_class)}
+            if stage not in EDITABLE_STAGES:
+                error = 'Matches can only be added to Stage 1 rounds or the decider.'
+            elif t1 not in class_ids or t2 not in class_ids or t1 == t2:
+                error = 'Pick two different bots from this class.'
+            else:
+                existing = matches_for(stage, 1, bot_class=bot_class)
+                new = Match(stage=stage, round_num=1, bot_class=bot_class, team1_id=t1, team2_id=t2,
+                            slot_index=max((x.slot_index for x in existing), default=-1) + 1,
+                            locked=bool(existing) and all(x.locked for x in existing))
+                db.session.add(new)
+                db.session.flush()
+                move_match_to_queue_bottom(new)
+                details = f'Added {match_label(new)}: {team_name(t1)} vs {team_name(t2)}'
+                log_override(bot_class, 'add_match', details)
+                message = details
+        elif action == 'delete_match' and match:
+            if match.stage not in EDITABLE_STAGES:
+                error = 'Stage 2 matches can only be edited or rolled back, not deleted one at a time.'
+            else:
+                details = (f'Deleted {match_label(match)}: {team_name(match.team1_id)} vs '
+                           f'{team_name(match.team2_id)}, winner {team_name(match.winner_id)}')
+                db.session.delete(match)
+                log_override(bot_class, 'delete_match', details)
+                message = details
+        elif action == 'rollback':
+            target = request.form.get('target', '')
+            if target in ROLLBACK_STAGES:
+                for stage in ROLLBACK_STAGES[target]:
+                    Match.query.filter_by(stage=stage, bot_class=bot_class).delete()
+                details = f'Rolled back {STAGE_LABELS[target]} and everything after it'
+            elif target.startswith('s2:') and parse_id(target[3:]):
+                rnd = parse_id(target[3:])
+                Match.query.filter(Match.stage == 's2', Match.bot_class == bot_class,
+                                   Match.round_num >= rnd).delete(synchronize_session=False)
+                Match.query.filter_by(stage='s2_placement', bot_class=bot_class).delete()
+                for m in matches_for('s2', rnd - 1, bot_class=bot_class) if rnd > 1 else []:
+                    if not m.is_bye:
+                        m.locked = False   # so its results can be fixed before advancing again
+                session.pop(f'stage2_last_round_{bot_class}', None)
+                details = f'Rolled back Stage 2 from Round {rnd}' + (' (whole bracket)' if rnd == 1 else '')
+            else:
+                details = None
+                error = 'Pick a round to roll back.'
+            if details:
+                log_override(bot_class, 'rollback', details)
+                message = details
+
+        if error:
+            db.session.rollback()
+            flash(error, 'error')
+        elif message:
+            cache.clear()
+            db.session.commit()
+            flash(message, 'info')
+        anchor = request.form.get('anchor', '')
+        return redirect(here + (anchor if anchor[1:].replace('-', '').isalnum() and anchor[:1] == '#' else ''))
+
+    teams = Team.query.filter_by(bot_class=bot_class).order_by(Team.name).all()
+    matched_ids = {tid for m in Match.query.filter_by(bot_class=bot_class)
+                   for tid in (m.team1_id, m.team2_id) if tid}
+    bot_rows = [{'team': t, 'rest': check_rest_status(t), 'has_matches': t.id in matched_ids} for t in teams]
+    groups = []
+    for stage in EDITABLE_STAGES + ['s2', 's2_placement']:
+        ms = Match.query.filter_by(stage=stage, bot_class=bot_class).order_by(Match.round_num, Match.slot_index).all()
+        for rnd in sorted({m.round_num for m in ms}):
+            title = STAGE_LABELS[stage] if stage != 's2' else f'Stage 2 – Round {rnd}'
+            groups.append({'title': title, 'matches': [m for m in ms if m.round_num == rnd]})
+    log = OverrideLog.query.filter_by(bot_class=bot_class).order_by(OverrideLog.id.desc()).limit(50).all()
+    return render_template('overrides.html', bot_rows=bot_rows, teams=teams, groups=groups, log=log,
+                           rollback_options=rollback_options(bot_class), result_types=RESULT_TYPES,
+                           queue_statuses=QUEUE_STATUSES, editable_stages=EDITABLE_STAGES,
+                           STAGE_LABELS=STAGE_LABELS, current_class=bot_class, BOT_CLASSES=enabled,
+                           ALL_CLASSES=BOT_CLASSES, CLASS_LABELS=CLASS_LABELS)
+
+
 # ---------- queue system ----------
 
 def upcoming_queue_items(bot_class):
@@ -1482,6 +1756,18 @@ def queue():
                 cache.clear()
                 db.session.commit()
                 flash('Match sent back to the bottom of the upcoming queue.', 'info')
+
+        elif action == 'move_top' and m and m.queue_status == 'queued' and m.winner_id is None:
+            # Emergency reorder (e.g. a bot has to leave early): put this match first.
+            others = Match.query.filter(Match.bot_class == m.bot_class, Match.is_bye == False,
+                                        Match.queue_status == 'queued', Match.winner_id == None,
+                                        Match.id != m.id).all()
+            m.queue_order = 0
+            for position, other in enumerate(sorted(others, key=queue_order_sort_key), start=1):
+                other.queue_order = position
+            cache.clear()
+            db.session.commit()
+            flash('Match moved to the top of the queue.', 'info')
 
         elif action == 'finish_match' and m and m.winner_id is None:
             m.queue_status = 'awaiting_results'

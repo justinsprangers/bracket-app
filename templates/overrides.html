@@ -1,0 +1,253 @@
+{% extends 'base.html' %}
+{% block title %}Manual Overrides{% endblock %}
+{% block content %}
+<h2>Manual Overrides</h2>
+
+<ul class="nav nav-tabs mb-3">
+  {% for cls in BOT_CLASSES %}
+    <li class="nav-item">
+      <a class="nav-link {% if cls == current_class %}active{% endif %}" href="{{ url_for('admin_overrides', **{'class': cls}) }}">{{ CLASS_LABELS[cls] }}</a>
+    </li>
+  {% endfor %}
+</ul>
+
+<div class="alert alert-warning">
+  Use this page when something goes wrong: a bot has to withdraw, a result was entered wrong, or the bracket needs fixing.
+  Changes here <strong>skip the normal checks</strong>, so double-check before saving. Every change is recorded in the
+  <a href="#log">override log</a> at the bottom.
+</div>
+
+<div class="card mb-4 border-secondary sticky-top" style="top: .5rem; z-index: 5;">
+  <div class="card-body py-2 d-flex gap-2 align-items-center flex-wrap">
+    <label for="override-reason" class="fw-semibold mb-0">Reason (saved in the log):</label>
+    <input id="override-reason" class="form-control form-control-sm" style="max-width: 36rem;" maxlength="255"
+           placeholder="e.g. Bot03 team had to leave; judges reversed Match 4">
+  </div>
+</div>
+
+<!-- ======================= BOTS ======================= -->
+<h4 id="bots">Bots</h4>
+<p class="text-muted small mb-2">
+  <strong>Withdraw</strong> turns every unfinished match of that bot into a forfeit win (FF) for its opponent and keeps it out of later rounds.
+  <strong>Reinstate</strong> lets it back in for future rounds; forfeits already given stay (edit those matches below if needed).
+</p>
+<div class="table-responsive mb-4">
+<table class="table table-sm table-bordered bg-white align-middle">
+  <thead class="table-light"><tr><th>Bot</th><th>Status</th><th>Withdraw / reinstate</th><th>Repair time left</th><th>Move to class</th></tr></thead>
+  <tbody>
+  {% for row in bot_rows %}
+    {% set t = row.team %}
+    <tr>
+      <td class="fw-semibold">{{ t.display_name }}</td>
+      <td>{% if t.dropped %}<span class="badge bg-danger">Withdrawn</span>{% else %}<span class="badge bg-success">Active</span>{% endif %}</td>
+      <td>
+        <form method="post" class="m-0"
+              data-confirm="{% if t.dropped %}Reinstate {{ t.name }}?{% else %}Withdraw {{ t.name }}? All of its unfinished matches become forfeit wins for the opponents.{% endif %}">
+          <input type="hidden" name="action" value="{{ 'reinstate' if t.dropped else 'withdraw' }}">
+          <input type="hidden" name="team_id" value="{{ t.id }}">
+          <input type="hidden" name="reason" value="">
+          <input type="hidden" name="anchor" value="#bots">
+          <button class="btn btn-sm {{ 'btn-outline-success' if t.dropped else 'btn-outline-danger' }}">{{ 'Reinstate' if t.dropped else 'Withdraw' }}</button>
+        </form>
+      </td>
+      <td>
+        <form method="post" class="m-0 d-flex gap-1 align-items-center">
+          <input type="hidden" name="action" value="set_repair">
+          <input type="hidden" name="team_id" value="{{ t.id }}">
+          <input type="hidden" name="reason" value="">
+          <input type="hidden" name="anchor" value="#bots">
+          <input type="number" name="minutes" min="0" max="120" class="form-control form-control-sm" style="width: 5rem;"
+                 value="{{ (row.rest[1] + 59) // 60 if not row.rest[0] else 0 }}">
+          <span class="small text-muted">min</span>
+          <button class="btn btn-sm btn-outline-primary">Set</button>
+        </form>
+      </td>
+      <td>
+        {% if row.has_matches %}
+          <span class="small text-muted">Has matches: withdraw and re-add instead</span>
+        {% else %}
+          <form method="post" class="m-0 d-flex gap-1">
+            <input type="hidden" name="action" value="change_class">
+            <input type="hidden" name="team_id" value="{{ t.id }}">
+            <input type="hidden" name="reason" value="">
+            <input type="hidden" name="anchor" value="#bots">
+            <select name="new_class" class="form-select form-select-sm" style="width: auto;">
+              {% for cls in ALL_CLASSES if cls != current_class %}<option value="{{ cls }}">{{ CLASS_LABELS[cls] }}</option>{% endfor %}
+            </select>
+            <button class="btn btn-sm btn-outline-primary">Move</button>
+          </form>
+        {% endif %}
+      </td>
+    </tr>
+  {% else %}
+    <tr><td colspan="5" class="text-muted">No bots in this class.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+
+<!-- ======================= MATCHES ======================= -->
+<h4 id="matches">Matches</h4>
+<p class="text-muted small mb-2">
+  Change either bot, the winner, the result type, whether the match is locked, or its queue status, then press <strong>Save</strong> on that row.
+  For Stage 2, keep <strong>Fix next round</strong> ticked when you change a winner so the bot that advanced (and the bronze match) is corrected too.
+  Bots marked * are withdrawn.
+</p>
+{% for group in groups %}
+  <h6 class="mt-3">{{ group.title }}</h6>
+  <div class="table-responsive">
+  <table class="table table-sm table-bordered bg-white align-middle mb-2">
+    <thead class="table-light"><tr><th>#</th><th>Bot A</th><th>Bot B</th><th>Winner</th><th>Type</th><th>Locked</th><th>Queue</th><th></th></tr></thead>
+    <tbody>
+    {% for m in group.matches %}
+      {% set fid = 'edit-' ~ m.id %}
+      <tr id="match-{{ m.id }}">
+        <td>
+          {{ m.slot_index + 1 }}{% if m.is_bye %} <span class="badge bg-info">BYE</span>{% endif %}
+          <form id="{{ fid }}" method="post" class="d-none">
+            <input type="hidden" name="action" value="edit_match">
+            <input type="hidden" name="match_id" value="{{ m.id }}">
+            <input type="hidden" name="reason" value="">
+            <input type="hidden" name="anchor" value="#match-{{ m.id }}">
+          </form>
+        </td>
+        <td>
+          <select name="team1" form="{{ fid }}" class="form-select form-select-sm">
+            {% for t in teams %}<option value="{{ t.id }}" {% if t.id == m.team1_id %}selected{% endif %}>{{ t.name }}{% if t.dropped %} *{% endif %}</option>{% endfor %}
+          </select>
+        </td>
+        <td>
+          {% if m.is_bye %}
+            <span class="text-muted">(bye)</span>
+          {% else %}
+            <select name="team2" form="{{ fid }}" class="form-select form-select-sm">
+              {% for t in teams %}<option value="{{ t.id }}" {% if t.id == m.team2_id %}selected{% endif %}>{{ t.name }}{% if t.dropped %} *{% endif %}</option>{% endfor %}
+            </select>
+          {% endif %}
+        </td>
+        <td>
+          {% if m.is_bye %}
+            <span class="text-muted">Bot A</span>
+          {% else %}
+            <select name="winner" form="{{ fid }}" class="form-select form-select-sm">
+              <option value="none" {% if not m.winner_id %}selected{% endif %}>No winner yet</option>
+              <option value="1" {% if m.winner_id and m.winner_id == m.team1_id %}selected{% endif %}>Bot A</option>
+              <option value="2" {% if m.winner_id and m.winner_id == m.team2_id %}selected{% endif %}>Bot B</option>
+            </select>
+          {% endif %}
+        </td>
+        <td>
+          <select name="result_type" form="{{ fid }}" class="form-select form-select-sm" style="width: auto;">
+            <option value="">—</option>
+            {% for rt in result_types %}<option value="{{ rt }}" {% if m.result_type == rt %}selected{% endif %}>{{ rt }}</option>{% endfor %}
+          </select>
+        </td>
+        <td class="text-center"><input type="checkbox" name="locked" value="1" form="{{ fid }}" class="form-check-input" {% if m.locked %}checked{% endif %}></td>
+        <td>
+          <select name="queue_status" form="{{ fid }}" class="form-select form-select-sm" style="width: auto;">
+            {% for qs in queue_statuses %}<option value="{{ qs }}" {% if m.queue_status == qs %}selected{% endif %}>{{ qs.replace('_', ' ') }}</option>{% endfor %}
+          </select>
+        </td>
+        <td class="text-nowrap">
+          {% if m.stage == 's2' and not m.is_bye %}
+            <label class="small me-1"><input type="checkbox" name="propagate" value="1" form="{{ fid }}" class="form-check-input" checked> Fix next round</label>
+          {% endif %}
+          <button type="submit" form="{{ fid }}" class="btn btn-sm btn-primary">Save</button>
+          {% if m.stage in editable_stages %}
+            <form method="post" class="d-inline m-0" data-confirm="Delete this match ({{ m.team1.name if m.team1 else '?' }} vs {{ m.team2.name if m.team2 else 'bye' }})?">
+              <input type="hidden" name="action" value="delete_match">
+              <input type="hidden" name="match_id" value="{{ m.id }}">
+              <input type="hidden" name="reason" value="">
+              <input type="hidden" name="anchor" value="#matches">
+              <button class="btn btn-sm btn-outline-danger">Delete</button>
+            </form>
+          {% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+{% else %}
+  <p class="text-muted">No matches yet for this class.</p>
+{% endfor %}
+
+<div class="row g-3 my-4">
+  <!-- ======================= ADD MATCH ======================= -->
+  <div class="col-lg-6">
+    <div class="card h-100" id="add">
+      <div class="card-header fw-semibold">Add a match (rematch or missing match)</div>
+      <div class="card-body">
+        <p class="small text-muted">Stage 1 and decider only. The match counts toward both bots' records and joins the bottom of the queue.</p>
+        <form method="post" class="row g-2">
+          <input type="hidden" name="action" value="add_match">
+          <input type="hidden" name="reason" value="">
+          <input type="hidden" name="anchor" value="#matches">
+          <div class="col-12">
+            <select name="stage" class="form-select form-select-sm">
+              {% for st in editable_stages %}<option value="{{ st }}">{{ STAGE_LABELS[st] }}</option>{% endfor %}
+            </select>
+          </div>
+          <div class="col-6">
+            <select name="team1" class="form-select form-select-sm">{% for t in teams if not t.dropped %}<option value="{{ t.id }}">{{ t.name }}</option>{% endfor %}</select>
+          </div>
+          <div class="col-6">
+            <select name="team2" class="form-select form-select-sm">{% for t in teams if not t.dropped %}<option value="{{ t.id }}" {% if loop.index == 2 %}selected{% endif %}>{{ t.name }}</option>{% endfor %}</select>
+          </div>
+          <div class="col-12"><button class="btn btn-sm btn-primary">Add match</button></div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- ======================= ROLLBACK ======================= -->
+  <div class="col-lg-6">
+    <div class="card h-100 border-danger">
+      <div class="card-header fw-semibold text-danger">Roll back a round</div>
+      <div class="card-body">
+        <p class="small text-muted">Deletes that round (pairings and results) and every round drawn after it, so you can fix the earlier results and generate it again from its normal page. Rolling back a Stage 2 round reopens the round before it.</p>
+        {% if rollback_options %}
+          <form method="post" class="d-flex gap-2" data-confirm="Delete this round and every round after it, including their results? This can't be undone.">
+            <input type="hidden" name="action" value="rollback">
+            <input type="hidden" name="reason" value="">
+            <select name="target" class="form-select form-select-sm">
+              {% for value, label in rollback_options %}<option value="{{ value }}">{{ label }}</option>{% endfor %}
+            </select>
+            <button class="btn btn-sm btn-danger text-nowrap">Roll back</button>
+          </form>
+        {% else %}
+          <p class="text-muted mb-0">No rounds generated yet.</p>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ======================= LOG ======================= -->
+<h4 id="log">Override log</h4>
+<div class="table-responsive">
+<table class="table table-sm table-striped bg-white">
+  <thead><tr><th>When (UTC)</th><th>Action</th><th>What changed</th><th>Reason</th></tr></thead>
+  <tbody>
+  {% for entry in log %}
+    <tr>
+      <td class="text-nowrap">{{ entry.created_at.strftime('%b %d %H:%M') }}</td>
+      <td>{{ entry.action.replace('_', ' ') }}</td>
+      <td>{{ entry.details }}</td>
+      <td>{{ entry.reason or '—' }}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="4" class="text-muted">No overrides yet.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+
+<script>
+  // Copy the shared "Reason" box into whichever form is being submitted.
+  document.addEventListener('submit', function(event) {
+    var field = event.target.querySelector('input[name="reason"]');
+    if (field) field.value = document.getElementById('override-reason').value;
+  }, true);
+</script>
+{% endblock %}
