@@ -370,10 +370,6 @@ def create_stage1_round2_matches(bot_class):
     round1_byes = {m.team1_id for m in matches_for('s1_r1', 1, bot_class=bot_class) if m.is_bye and m.team1_id}
     
     winners, losers = stage1_round1_groups(bot_class)
-    # Withdrawn bots don't get a Round 2 match.
-    active_ids = {t.id for t in active_teams(bot_class)}
-    winners = [tid for tid in winners if tid in active_ids]
-    losers = [tid for tid in losers if tid in active_ids]
     # slot_index keeps counting across both groups so every Round 2 match gets its own number
     # (it used to restart at 0 for the losers group, interleaving the two groups).
     slot = 0
@@ -1433,10 +1429,10 @@ def stage2(round_num):
 
 
 # ---------- manual overrides ----------
-# The Overrides page lets an admin fix anything by hand (withdrawals, wrong results, a broken
+# The Overrides page lets an admin fix anything by hand (matchups, wrong results, a broken
 # bracket). These actions skip the normal step-by-step checks, so every one is logged.
 
-RESULT_TYPES = ['KO', 'JD', 'TO', 'FF']   # FF = forfeit (e.g. a withdrawn bot)
+RESULT_TYPES = ['KO', 'JD', 'TO', 'FF']   # FF = forfeit
 QUEUE_STATUSES = ['queued', 'in_progress', 'awaiting_results', 'completed']
 EDITABLE_STAGES = ['s1_r1', 's1_r2', 'decider']   # stages where matches can be added/deleted
 # Deleting a stage also deletes every stage drawn from it.
@@ -1464,24 +1460,75 @@ def log_override(bot_class, action, details):
                                details=details[:500], reason=reason))
 
 
-def withdraw_bot(team):
-    """Withdraw a bot: every match it hasn't finished becomes a forfeit win for its opponent."""
-    forfeits = []
-    open_matches = Match.query.filter(Match.winner_id == None, Match.is_bye == False,
-                                      or_(Match.team1_id == team.id, Match.team2_id == team.id)).all()
-    for m in open_matches:
-        opponent_id = m.team2_id if m.team1_id == team.id else m.team1_id
-        if opponent_id is None:
-            continue
-        opponent = db.session.get(Team, opponent_id)
-        rest_before = opponent.last_match_end_time if opponent else None
-        update_match_winner(m, opponent_id)
-        if opponent:
-            opponent.last_match_end_time = rest_before   # a forfeit win isn't a fight: no repair timer
-        m.result_type = 'FF'
-        forfeits.append(f'{match_label(m)} to {team_name(opponent_id)}')
-    team.dropped = True
-    return forfeits
+def unplayed_matches(bot_class):
+    """Matches still waiting to be fought (no result, not a bye, not already fought)."""
+    return Match.query.filter(Match.bot_class == bot_class, Match.is_bye == False,
+                              Match.winner_id == None, Match.queue_status != 'awaiting_results').all()
+
+
+def swap_choices(bot_class):
+    """(team_id, label) for every bot waiting in an unplayed match, in queue order."""
+    choices = []
+    for m in sorted(unplayed_matches(bot_class), key=queue_order_sort_key):
+        for tid, other in ((m.team1_id, m.team2_id), (m.team2_id, m.team1_id)):
+            if tid:
+                choices.append((tid, f'{team_name(tid)} (vs {team_name(other)})'))
+    return choices
+
+
+def swap_bots(bot_class, a_id, b_id):
+    """Swap two bots between their unplayed matches (same round), or swap sides if they're in
+    the same match. Returns (error, summary)."""
+    if a_id is None or b_id is None or a_id == b_id:
+        return 'Pick two different bots.', None
+    slots = {}
+    for tid in (a_id, b_id):
+        found = [m for m in unplayed_matches(bot_class) if tid in (m.team1_id, m.team2_id)]
+        if not found:
+            return f'{team_name(tid)} has no unplayed match to swap.', None
+        if len(found) > 1:
+            return (f'{team_name(tid)} is in more than one unplayed match; edit the matches on the '
+                    'Overrides page instead.'), None
+        slots[tid] = found[0]
+    ma, mb = slots[a_id], slots[b_id]
+    if (ma.stage, ma.round_num) != (mb.stage, mb.round_num):
+        return 'Those bots are in different rounds; you can only swap within the same round.', None
+    if ma.id == mb.id:
+        ma.team1_id, ma.team2_id = ma.team2_id, ma.team1_id
+        return None, f'{match_label(ma)}: swapped sides, now {team_name(ma.team1_id)} vs {team_name(ma.team2_id)}'
+    side_a = 'team1_id' if ma.team1_id == a_id else 'team2_id'
+    side_b = 'team1_id' if mb.team1_id == b_id else 'team2_id'
+    setattr(ma, side_a, b_id)
+    setattr(mb, side_b, a_id)
+    summary = (f'Swapped {team_name(a_id)} and {team_name(b_id)}: {match_label(ma)} is now '
+               f'{team_name(ma.team1_id)} vs {team_name(ma.team2_id)}, {match_label(mb)} is now '
+               f'{team_name(mb.team1_id)} vs {team_name(mb.team2_id)}')
+    if ma.stage == 's1_r2':
+        groups = stage1_team_groups(bot_class)
+        if groups.get(a_id) != groups.get(b_id):
+            summary += ' (note: this mixes Round 1 winners and losers)'
+    return None, summary
+
+
+def move_in_queue(match, new_position):
+    """Number the upcoming queue in its current order, then move this match to new_position."""
+    queued = sorted(Match.query.filter(Match.bot_class == match.bot_class, Match.is_bye == False,
+                                       Match.queue_status == 'queued', Match.winner_id == None).all(),
+                    key=queue_order_sort_key)
+    if match not in queued:
+        return False
+    queued.remove(match)
+    queued.insert(max(0, min(new_position, len(queued))), match)
+    for position, m in enumerate(queued):
+        m.queue_order = position
+    return True
+
+
+def queue_position(match):
+    queued = sorted(Match.query.filter(Match.bot_class == match.bot_class, Match.is_bye == False,
+                                       Match.queue_status == 'queued', Match.winner_id == None).all(),
+                    key=queue_order_sort_key)
+    return queued.index(match) if match in queued else None
 
 
 def propagate_stage2_winner(m, old_winner, new_winner):
@@ -1588,15 +1635,12 @@ def admin_overrides():
             team = None
         message, error = None, None
 
-        if action == 'withdraw' and team and not team.dropped:
-            forfeits = withdraw_bot(team)
-            details = f'Withdrew {team.name}' + (f'; forfeits: {", ".join(forfeits)}' if forfeits else '')
-            log_override(bot_class, 'withdraw', details)
-            message = details
-        elif action == 'reinstate' and team and team.dropped:
-            team.dropped = False
-            log_override(bot_class, 'reinstate', f'Reinstated {team.name} (earlier forfeits stay; edit those matches if needed)')
-            message = f'Reinstated {team.name}. Forfeited matches were not changed back.'
+        if action == 'swap_bots':
+            error, summary = swap_bots(bot_class, parse_id(request.form.get('bot_a')),
+                                       parse_id(request.form.get('bot_b')))
+            if summary:
+                log_override(bot_class, 'swap_bots', summary)
+                message = summary
         elif action == 'set_repair' and team:
             minutes = parse_id(request.form.get('minutes'))
             if minutes is None or not 0 <= minutes <= 120:
@@ -1610,8 +1654,8 @@ def admin_overrides():
             if new_class not in BOT_CLASSES or new_class == team.bot_class:
                 error = 'Pick a different class.'
             elif Match.query.filter(or_(Match.team1_id == team.id, Match.team2_id == team.id)).count():
-                error = (f"{team.name} already has matches in {CLASS_LABELS[team.bot_class]}. Withdraw it here "
-                         'and add it again in the other class instead.')
+                error = (f"{team.name} already has matches in {CLASS_LABELS[team.bot_class]}, so it can't "
+                         'change class. Add it again in the other class instead.')
             else:
                 log_override(bot_class, 'change_class', f'Moved {team.name} to {CLASS_LABELS[new_class]}')
                 team.bot_class = new_class
@@ -1699,7 +1743,8 @@ def admin_overrides():
                            rollback_options=rollback_options(bot_class), result_types=RESULT_TYPES,
                            queue_statuses=QUEUE_STATUSES, editable_stages=EDITABLE_STAGES,
                            STAGE_LABELS=STAGE_LABELS, current_class=bot_class, BOT_CLASSES=enabled,
-                           ALL_CLASSES=BOT_CLASSES, CLASS_LABELS=CLASS_LABELS)
+                           ALL_CLASSES=BOT_CLASSES, CLASS_LABELS=CLASS_LABELS,
+                           swap_options=swap_choices(bot_class))
 
 
 # ---------- queue system ----------
@@ -1757,17 +1802,27 @@ def queue():
                 db.session.commit()
                 flash('Match sent back to the bottom of the upcoming queue.', 'info')
 
-        elif action == 'move_top' and m and m.queue_status == 'queued' and m.winner_id is None:
-            # Emergency reorder (e.g. a bot has to leave early): put this match first.
-            others = Match.query.filter(Match.bot_class == m.bot_class, Match.is_bye == False,
-                                        Match.queue_status == 'queued', Match.winner_id == None,
-                                        Match.id != m.id).all()
-            m.queue_order = 0
-            for position, other in enumerate(sorted(others, key=queue_order_sort_key), start=1):
-                other.queue_order = position
-            cache.clear()
-            db.session.commit()
-            flash('Match moved to the top of the queue.', 'info')
+        elif action in ('move_top', 'move_up', 'move_down', 'move_bottom') and m:
+            # Reorder on the fly (buttons work on phones, where drag-and-drop doesn't).
+            pos = queue_position(m)
+            if pos is not None:
+                target = {'move_top': 0, 'move_up': pos - 1, 'move_down': pos + 1,
+                          'move_bottom': 10 ** 6}[action]
+                move_in_queue(m, target)
+                cache.clear()
+                db.session.commit()
+
+        elif action == 'swap_bots':
+            error, summary = swap_bots(current_class, parse_id(request.form.get('bot_a')),
+                                       parse_id(request.form.get('bot_b')))
+            if error:
+                db.session.rollback()
+                flash(error, 'error')
+            else:
+                log_override(current_class, 'swap_bots', summary)
+                cache.clear()
+                db.session.commit()
+                flash(summary, 'info')
 
         elif action == 'finish_match' and m and m.winner_id is None:
             m.queue_status = 'awaiting_results'
@@ -1808,7 +1863,8 @@ def queue():
                            completed_matches=completed_matches,
                            current_class=current_class,
                            BOT_CLASSES=enabled,
-                           CLASS_LABELS=CLASS_LABELS)
+                           CLASS_LABELS=CLASS_LABELS,
+                           swap_options=swap_choices(current_class))
 
 
 @app.route('/queue/overlay')

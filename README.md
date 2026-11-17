@@ -16,15 +16,14 @@ When something goes wrong mid-event, use **🛠️ Overrides** in the admin navb
 
 | Situation | What to do |
 |---|---|
-| A bot has to leave / emergency | **Withdraw** it. Its unfinished matches become forfeit (FF) wins for the opponents, and it's left out of later rounds. **Reinstate** undoes the withdrawal for future rounds. |
-| Wrong winner, result type, or bots in a match | Edit that match's row and press **Save**. In Stage 2, keep **Fix next round** ticked so the bot that advanced (and the bronze match) is corrected too. |
-| Two bots need to switch matches | Edit both match rows. |
+| Matchups need to change (a bot isn't ready, a pairing has to be redone) | **Change a matchup**: pick two bots waiting to fight in the same round and they trade places. Pick both bots of one match to swap red/blue sides. Also on the Match Queue page. |
+| Matches need to run in a different order | On the **Match Queue** page, use the arrows (top / up / down / bottom) on each match, or drag them. |
+| Wrong winner, result type, or bots in a match | Edit that match's row and press **Save**. In Stage 2, keep **Fix next round** ticked so the bot that advanced (and the bronze match) is corrected too. Use the FF result type for a forfeit. |
 | A rematch, or a match that's missing | **Add a match** (Stage 1 and decider). |
 | A match shouldn't exist | **Delete** it (Stage 1 and decider). |
 | A round was drawn from bad results | **Roll back** that round. It deletes the round and everything after it; fix the earlier results, then generate it again from its normal page. |
 | A bot needs more or less repair time | Set its **Repair time left**. |
-| Bot entered in the wrong class | **Move to class** (only before it has matches; otherwise withdraw it and add it again). |
-| A match has to go next | **Move to Top** on the Match Queue page. |
+| Bot entered in the wrong class | **Move to class** (only before it has matches). |
 
 For streaming, open the Stage 2 bracket's **Streaming Overlay** link or use `/stage2/overlay?class=3lb` as a transparent browser source. Replace `3lb` with `1lb` or `1lb_plant` to select another bot class. The overlay refreshes every 20 seconds.
 

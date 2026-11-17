@@ -1,0 +1,27 @@
+{# "Change a matchup": swap two bots between unplayed matches in the same round
+   (or pick both bots of one match to swap sides). Used on the queue and Overrides pages. #}
+<div class="card mb-4" id="swap">
+  <div class="card-header fw-semibold">Change a matchup</div>
+  <div class="card-body">
+    {% if swap_options|length >= 2 %}
+      <p class="small text-muted mb-2">Pick two bots waiting to fight in the same round and they trade places
+        (e.g. A vs B and C vs D, swap B and C &rarr; A vs C and B vs D). Pick both bots of one match to swap red/blue sides.
+        Changes are saved in the override log.</p>
+      <form method="post" class="d-flex flex-wrap gap-2 align-items-center">
+        <input type="hidden" name="action" value="swap_bots">
+        <input type="hidden" name="reason" value="">
+        <input type="hidden" name="anchor" value="#swap">
+        <select name="bot_a" class="form-select form-select-sm" style="width: auto;" aria-label="First bot">
+          {% for tid, label in swap_options %}<option value="{{ tid }}">{{ label }}</option>{% endfor %}
+        </select>
+        <span>&harr;</span>
+        <select name="bot_b" class="form-select form-select-sm" style="width: auto;" aria-label="Second bot">
+          {% for tid, label in swap_options %}<option value="{{ tid }}" {% if loop.index == 2 %}selected{% endif %}>{{ label }}</option>{% endfor %}
+        </select>
+        <button class="btn btn-sm btn-primary">Swap</button>
+      </form>
+    {% else %}
+      <p class="text-muted mb-0">No unplayed matches to change.</p>
+    {% endif %}
+  </div>
+</div>

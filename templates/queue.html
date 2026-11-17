@@ -60,7 +60,7 @@
 
 <!-- DRAG AND DROP QUEUE LIST -->
 <div class="card mb-4">
-  <div class="card-header bg-light fw-bold">Upcoming Queue (Drag to Reorder)</div>
+  <div class="card-header bg-light fw-bold">Upcoming Queue (drag, or use the arrows, to reorder)</div>
   <ul class="list-group list-group-flush" id="queueList">
     {% for item in queued_matches %}
       {% set m = item.match %}
@@ -89,25 +89,30 @@
           <strong>{{ m.team2.name }}</strong> <span class="badge bg-outline-secondary text-dark border">Pit {{ m.team2.pit_table_number or 'N/A' }}</span>
         </div>
 
-        {% if not in_progress and loop.index == 1 %}
-          <form method="post" class="m-0">
-            <input type="hidden" name="action" value="start_match">
+        <div class="d-flex gap-2 align-items-center">
+          {% if not in_progress and loop.index == 1 %}
+            <form method="post" class="m-0">
+              <input type="hidden" name="action" value="start_match">
+              <input type="hidden" name="match_id" value="{{ m.id }}">
+              <button class="btn btn-success btn-sm">Start Match</button>
+            </form>
+          {% endif %}
+          <form method="post" class="m-0 btn-group btn-group-sm" role="group" aria-label="Move match">
             <input type="hidden" name="match_id" value="{{ m.id }}">
-            <button class="btn btn-success btn-sm">Start Match</button>
+            <button name="action" value="move_top" class="btn btn-outline-secondary" title="Move to top" {% if loop.first %}disabled{% endif %}>&#x2912;</button>
+            <button name="action" value="move_up" class="btn btn-outline-secondary" title="Move up one" {% if loop.first %}disabled{% endif %}>&#x25B2;</button>
+            <button name="action" value="move_down" class="btn btn-outline-secondary" title="Move down one" {% if loop.last %}disabled{% endif %}>&#x25BC;</button>
+            <button name="action" value="move_bottom" class="btn btn-outline-secondary" title="Move to bottom" {% if loop.last %}disabled{% endif %}>&#x2913;</button>
           </form>
-        {% elif loop.index > 1 %}
-          <form method="post" class="m-0">
-            <input type="hidden" name="action" value="move_top">
-            <input type="hidden" name="match_id" value="{{ m.id }}">
-            <button class="btn btn-outline-secondary btn-sm" title="Put this match first in the queue">Move to Top</button>
-          </form>
-        {% endif %}
+        </div>
       </li>
     {% else %}
       <li class="list-group-item text-muted text-center">No matches currently in queue.</li>
     {% endfor %}
   </ul>
 </div>
+
+{% include '_swap_form.html' %}
 
 <hr class="my-4">
 

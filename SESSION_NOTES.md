@@ -5,7 +5,7 @@ Club repo (railsiderobotics/bracket-app).
 ## Status
 - 2026-11-17: 21 bug fixes on `fix/general-bugfixes`, see `FIX_REPORT.md`. Tested on SQLite only (not Neon).
 - `feature/local-testing` (built on main, independent): README "Running locally", `.env.example`, `seed_demo.py`.
-- `feature/admin-overrides` (built on the fix branch): Overrides page (`/admin/overrides`): withdraw/reinstate, edit any match (Stage 2 changes carry into the next round and the bronze match), add/delete Stage 1 matches, roll back rounds, set repair time, change class, override log (`OverrideLog` table); queue "Move to Top".
+- `feature/admin-overrides` (built on the fix branch): Overrides page (`/admin/overrides`): change a matchup (swap two bots in the same round, or swap sides), edit any match (Stage 2 changes carry into the next round and the bronze match), add/delete Stage 1 matches, roll back rounds, set repair time, change class, override log (`OverrideLog` table). Match Queue: top/up/down/bottom buttons and the same swap form. No withdraw option (user decided 2026-11-17).
 - Kept separate from `arena-controller` for now; they're meant to talk later (arena prints `state: N` / `time: N` over serial at 9600).
 
 ## Next steps
@@ -17,5 +17,5 @@ Club repo (railsiderobotics/bracket-app).
 - `queue_status` values: queued, in_progress, awaiting_results, completed (set when a winner is saved).
 
 ## Log
-- 2026-11-17: admin overrides feature (72/72 end-to-end checks incl. 33 override checks).
+- 2026-11-17: admin overrides feature; withdraw dropped, matchup swap + queue arrows added (76/76 end-to-end checks).
 - 2026-11-17: bug sweep (stale-form data loss, queue order, re-queue, byes, Stage 2 guards, timers, standings cache, confirms).

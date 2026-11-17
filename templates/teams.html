@@ -54,9 +54,7 @@
           <input type="hidden" name="action" value="edit">
           <input type="hidden" name="team_id" value="{{ t.id }}">
           <input type="hidden" name="bot_class" value="{{ current_class }}">
-          <input type="text" name="bot_name_{{ t.id }}" class="form-control" value="{{ t.name }}" required>
-          {% if t.dropped %}<span class="badge bg-danger" title="Withdrawn on the Overrides page">Withdrawn</span>{% endif %}
-      </td>
+          <input type="text" name="bot_name_{{ t.id }}" class="form-control" value="{{ t.name }}" required>      </td>
       <td>
           <input type="text" name="assigned_team_name_{{ t.id }}" class="form-control" value="{{ t.assigned_team_name }}" required>
       </td>
